@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UTD CSVTU AI Assistant</title>
+  <meta name="description" content="AI assistant for the University Teaching Department (UTD), CSVTU Bhilai.">
+  <script>
+    /* Apply the saved theme before the page paints (default = light) */
+    try { if (localStorage.getItem("utd-theme") === "dark") document.documentElement.setAttribute("data-theme", "dark"); } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">U</span>
+        <div class="brand-text">
+          <h1 data-i18n="title">UTD CSVTU AI Assistant</h1>
+          <p data-i18n="subtitle">University Teaching Department · CSVTU, Bhilai</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="seg" role="radiogroup" aria-label="Language">
+          <button type="button" class="seg-btn" data-lang="en" role="radio" title="English">EN</button>
+          <button type="button" class="seg-btn" data-lang="hi" role="radio" title="हिन्दी">हिं</button>
+          <button type="button" class="seg-btn" data-lang="both" role="radio" title="English + हिन्दी">EN + हिं</button>
+        </div>
+        <button id="themeBtn" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Light / Dark">🌙</button>
+        <button id="clearBtn" class="icon-btn" type="button" aria-label="Clear chat" title="Clear chat">🗑️</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner hidden" role="status"></div>
+
+    <!-- Conversation -->
+    <div class="messages-wrap">
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <button id="toBottom" class="to-bottom hidden" type="button" aria-label="Scroll to latest message">↓</button>
+    </div>
+
+    <!-- Composer -->
+    <form id="chatForm" class="composer" autocomplete="off">
+      <textarea id="input" rows="1" maxlength="1000" data-i18n-placeholder="placeholder" placeholder="Type your question..."></textarea>
+      <button id="sendBtn" type="submit" class="send" data-i18n="send">Send</button>
+    </form>
+    <p class="hint" data-i18n="hint">Please verify important dates and fees on csvtu.ac.in.</p>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span id="copyright"></span>
+      <nav class="links" aria-label="Creator links">
+        <a id="linkPortfolio" class="pill hidden" target="_blank" rel="noopener noreferrer">🌐 Portfolio</a>
+        <a id="linkGithub" class="pill hidden" target="_blank" rel="noopener noreferrer">💻 GitHub</a>
+        <a id="linkLinkedin" class="pill hidden" target="_blank" rel="noopener noreferrer">💼 LinkedIn</a>
+      </nav>
+    </footer>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
