@@ -52,8 +52,8 @@ load_dotenv(BASE_DIR / ".env")
 
 PDF_DIR = BASE_DIR / "pdfs"        # optional folder with extra CSVTU PDFs
 STATIC_DIR = BASE_DIR / "static"   # folder with index.html, style.css, script.js
-HOST = "127.0.0.1"
-PORT = 8000
+PORT = int(os.getenv("PORT", "8000"))                      # Render sets PORT automatically
+HOST = os.getenv("HOST", "0.0.0.0" if os.getenv("PORT") else "127.0.0.1")   # 0.0.0.0 on Render, localhost on your PC
 
 MISTRAL_CHAT_MODEL = "mistral-code-latest"   # change chat model here
 MISTRAL_EMBED_MODEL = "mistral-embed"
@@ -216,7 +216,7 @@ class QueryAnalysis(BaseModel):
     """Output of the 'understand query' step."""
 
     intent: Literal["greeting_or_smalltalk", "csvtu_question", "off_topic"] = Field(
-        description="greeting_or_smalltalk: hello/hi/namaste/thanks/bye/how are you/who are you/who made you/what can you do. "
+        description="greeting_or_smalltalk: hello/hi/namaste/thanks/bye/how are you/who are you/who made you/what can you do/what do you know. "
         "csvtu_question: any request for information about UTD, CSVTU, their courses, syllabus, exams, results, rules, "
         "attendance, admissions, fees, notices, campus, faculty or academic procedures. "
         "off_topic: anything else."
@@ -254,7 +254,7 @@ class ChatRequest(BaseModel):
 # ----------------------------------------------------------------------------
 class KnowledgeBase:
     def __init__(self):
-        self.ready = False
+        self.ready = True   # chat works right away: built-in UTD facts need no embeddings
         self.building = False
         self.vector_store = None
         self.files: List[Dict] = []
@@ -289,7 +289,6 @@ def list_pdf_files() -> List[Path]:
 def build_knowledge_base():
     """Runs in a background thread so the server starts instantly."""
     KB.building = True
-    KB.ready = False
     warnings: List[str] = []
     files: List[Dict] = []
     store = None
@@ -337,22 +336,30 @@ def build_knowledge_base():
                 to_index += splitter.split_documents(raw_docs)
             chunk_count = len(to_index)
 
-            # 3) Embed everything into an in-memory vector store
+            # 3) Embed into an in-memory vector store.
+            #    A batch that keeps failing is skipped and logged; it no longer throws away the batches that worked.
             try:
                 store = InMemoryVectorStore(MistralAIEmbeddings(model=MISTRAL_EMBED_MODEL))
+            except Exception as exc:
+                store = None
+                warnings.append(f"Could not create the embeddings client: {exc}")
+            if store is not None:
+                failed = 0
                 for i in range(0, len(to_index), EMBED_BATCH_SIZE):
                     batch = to_index[i : i + EMBED_BATCH_SIZE]
-                    for attempt in range(3):  # simple retry for rate limits
+                    for attempt in range(5):  # retries help with rate limits (429)
                         try:
                             store.add_documents(batch)
                             break
-                        except Exception:
-                            if attempt == 2:
-                                raise
-                            threading.Event().wait(2 * (attempt + 1))
-            except Exception as exc:
-                store = None
-                warnings.append(f"Embedding failed: {exc}")
+                        except Exception as exc:
+                            if attempt == 4:
+                                failed += 1
+                                warnings.append(f"Embedding batch {i // EMBED_BATCH_SIZE + 1} failed: {exc}")
+                            else:
+                                threading.Event().wait(3 * (2 ** attempt))   # 3, 6, 12, 24 seconds
+                    threading.Event().wait(0.5)   # small pause between API calls
+                if failed:
+                    warnings.append(f"{failed} batch(es) could not be embedded, so some PDF content is missing from search.")
     except Exception as exc:
         store = None
         warnings.append(f"Unexpected error while building the knowledge base: {exc}")
@@ -408,6 +415,18 @@ def stream_llm(llm, messages, writer) -> str:
             parts.append(text)
             writer({"type": "token", "text": text})
     return "".join(parts)
+
+
+BUILTIN_DOCS = builtin_documents()
+FACT_WORDS = (
+    "utd", "csvtu", "university teaching", "bhilai", "newai", "programme", "program", "course", "department",
+    "admission", "campus", "contact", "address", "located", "location", "history", "established", "about",
+)
+
+
+def facts_relevant(query: str) -> bool:
+    q = query.lower()
+    return any(w in q for w in FACT_WORDS)
 
 
 def tavily_enabled() -> bool:
@@ -518,17 +537,26 @@ def build_graph(llm: ChatMistralAI):
     def retrieve_kb(state: AgentState) -> AgentState:
         writer = get_stream_writer()
         writer({"type": "status", "text": STATUS["searching_kb"][state["language"]]})
+        query = state["standalone_query"]
+        docs: List[Document] = []
         store = KB.vector_store
-        if store is None:
-            return {"docs": []}
-        try:
-            return {"docs": store.similarity_search(state["standalone_query"], k=TOP_K)}
-        except Exception:
-            return {"docs": []}
+        if store is not None:
+            try:
+                docs = store.similarity_search(query, k=TOP_K)
+            except Exception as exc:
+                print(f"[agent] retrieval failed: {exc}")
+        # Built-in UTD facts are passed directly (no embeddings needed), so the bot always knows them.
+        if store is None or facts_relevant(query):
+            seen = {d.page_content for d in docs}
+            docs = [f for f in BUILTIN_DOCS if f.page_content not in seen] + docs
+        print(f"[agent] query={query!r} | retrieved={len(docs)} | index={'ok' if store is not None else 'EMPTY'}")
+        return {"docs": docs}
 
     def evaluate_kb(state: AgentState) -> AgentState:
         context = "\n\n".join(d.page_content for d in state.get("docs", []))
-        return {"docs_ok": judge(state["standalone_query"], context)}
+        ok = judge(state["standalone_query"], context)
+        print(f"[agent] knowledge base sufficient: {ok}")
+        return {"docs_ok": ok}
 
     # --- 3. Tavily web search (only when the knowledge base is not enough) ---
     def web_search(state: AgentState) -> AgentState:
@@ -542,13 +570,17 @@ def build_graph(llm: ChatMistralAI):
             if not results:  # fall back to a general search (labelled as unofficial later)
                 general = TavilySearch(max_results=4)
                 results = parse_tavily(general.invoke({"query": f"CSVTU {query}"}))
-        except Exception:
+        except Exception as exc:
+            print(f"[agent] web search failed: {exc}")
             results = []
+        print(f"[agent] web results: {len(results)}")
         return {"web_results": results}
 
     def evaluate_web(state: AgentState) -> AgentState:
         context = "\n\n".join(f"{r['domain']}: {r['content']}" for r in state.get("web_results", []))
-        return {"web_ok": judge(state["standalone_query"], context)}
+        ok = judge(state["standalone_query"], context)
+        print(f"[agent] web sufficient: {ok}")
+        return {"web_ok": ok}
 
     # --- 4a. Final structured answer (streamed) ------------------------------
     def generate_answer(state: AgentState) -> AgentState:
@@ -652,8 +684,7 @@ def ndjson(obj: dict) -> str:
 @app.get("/api/status")
 def status():
     # Only a simple "can the bot answer?" flag. No file names or warnings are exposed to users.
-    has_source = KB.vector_store is not None or tavily_enabled()
-    return {"ready": KB.ready, "available": AGENT is not None and has_source}
+    return {"ready": KB.ready, "available": AGENT is not None}
 
 
 @app.post("/api/chat")
