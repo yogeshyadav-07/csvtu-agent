@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+langchain-core
+langchain-text-splitters
+langchain-mistralai
+langchain-tavily
+langgraph
+pypdf
+python-dotenv
